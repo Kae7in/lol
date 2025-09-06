@@ -1,0 +1,231 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { useState, useMemo, useEffect } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { fetchClient, $api } from '@/lib/api-client';
+import { useToast } from '@/hooks/use-toast';
+import { Loader2 } from 'lucide-react';
+import { AIChat } from '@/components/AIChat';
+import { CodeEditor, type ProjectFiles } from '@/components/CodeEditor';
+import { PreviewToggle } from '@/components/PreviewToggle';
+import { useNavigate } from '@tanstack/react-router';
+
+export const Route = createFileRoute('/create_/$id')({
+  component: EditProjectPage,
+});
+
+function compileProject(files: ProjectFiles): string {
+  const entryHTML = files['index.html']?.content || '';
+  
+  const allCSS = Object.entries(files)
+    .filter(([name]) => name.endsWith('.css'))
+    .map(([_, file]) => file.content)
+    .join('\n');
+  
+  const allJS = Object.entries(files)
+    .filter(([name]) => name.endsWith('.js'))
+    .map(([_, file]) => file.content)
+    .join(';\n');
+  
+  let compiledHTML = entryHTML;
+  
+  if (allCSS) {
+    compiledHTML = compiledHTML.replace('</head>', `<style>${allCSS}</style></head>`);
+  }
+  
+  if (allJS) {
+    compiledHTML = compiledHTML.replace('</body>', `<script>${allJS}</script></body>`);
+  }
+  
+  return compiledHTML;
+}
+
+function EditProjectPage() {
+  const { id: projectId } = Route.useParams();
+  const navigate = useNavigate();
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
+  const [files, setFiles] = useState<ProjectFiles>({});
+  const [projectTitle, setProjectTitle] = useState<string>('Untitled Project');
+  
+  const { toast } = useToast();
+
+  // Fetch the existing project
+  const { data: project, isLoading: isLoadingProject, error: projectError, refetch: refetchProject } = $api.useQuery(
+    'get',
+    '/api/projects/{id}',
+    {
+      params: {
+        path: { id: projectId },
+      },
+    },
+    {
+      refetchOnWindowFocus: false,
+      enabled: !!projectId,
+    }
+  );
+
+  // Set files when project loads
+  useEffect(() => {
+    if (project) {
+      setFiles(project.files as ProjectFiles);
+      setProjectTitle(project.title || 'Untitled Project');
+    }
+  }, [project]);
+
+  const iterateMutation = useMutation({
+    mutationFn: async (prompt: string) => {
+      const response = await fetchClient.POST('/api/ai/iterate', {
+        body: {
+          prompt,
+          projectId,
+          currentFiles: files,
+        },
+      });
+      
+      if (response.error) {
+        throw new Error(response.error.message || 'Failed to iterate on project');
+      }
+      
+      return response.data;
+    },
+    onSuccess: (data) => {
+      if (data?.files) {
+        setFiles(data.files as ProjectFiles);
+        toast({
+          title: 'Project updated!',
+          description: 'Your changes have been applied.',
+        });
+        // Refetch the project to get the latest data
+        refetchProject();
+      }
+    },
+    onError: (error) => {
+      toast({
+        title: 'Iteration failed',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetchClient.PUT('/api/projects/{id}', {
+        params: { path: { id: projectId } },
+        body: {
+          title: projectTitle,
+          files,
+        },
+      });
+      
+      if (response.error) {
+        throw new Error(response.error.message || 'Failed to update project');
+      }
+      
+      return response.data;
+    },
+    onSuccess: () => {
+      toast({
+        title: 'Project saved!',
+        description: 'Your project has been saved successfully.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Save failed',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleGenerate = async (prompt: string, messages: any[]) => {
+    await iterateMutation.mutateAsync(prompt);
+  };
+
+  const isGenerating = iterateMutation.isPending;
+
+  // Simply derive the compiled HTML - pure computation, no side effects
+  const compiledHtml = useMemo(() => {
+    // If we have files, compile them; otherwise use the pre-compiled HTML from the project
+    if (files && Object.keys(files).length > 0) {
+      return compileProject(files);
+    } else if (project?.compiled) {
+      return project.compiled;
+    }
+    return '';
+  }, [files, project]);
+
+  if (isLoadingProject) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <span>Loading project...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!project) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold mb-2">Project not found</h2>
+          <button
+            onClick={() => navigate({ to: '/create' })}
+            className="text-primary hover:underline"
+          >
+            Create a new project
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen bg-background">
+      {/* Left Panel - AI Chat */}
+      <div className="w-1/3 border-r border-border flex flex-col">
+        <AIChat 
+          onGenerate={handleGenerate}
+          isGenerating={isGenerating}
+        />
+      </div>
+
+      {/* Right Panel - Preview/Code */}
+      <div className="w-2/3 flex flex-col">
+        <div className="p-4 border-b border-border flex justify-between items-center bg-background">
+          <h2 className="text-xl font-semibold">{projectTitle}</h2>
+          <PreviewToggle 
+            mode={viewMode}
+            onModeChange={setViewMode}
+          />
+        </div>
+        
+        <div className="flex-1 overflow-hidden">
+          {viewMode === 'preview' ? (
+            compiledHtml ? (
+              <iframe
+                srcDoc={compiledHtml}
+                sandbox="allow-scripts"
+                className="w-full h-full border-0 bg-white"
+                title="Preview"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                <span>No preview available</span>
+              </div>
+            )
+          ) : (
+            <CodeEditor
+              files={files}
+              onFilesChange={setFiles}
+              onSave={() => saveMutation.mutate()}
+              isSaving={saveMutation.isPending}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
