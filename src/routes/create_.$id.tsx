@@ -63,33 +63,57 @@ function EditProjectPage() {
     }
   );
 
+  // Helper function to infer file type from filename
+  const inferFileType = (filename: string): 'html' | 'css' | 'javascript' => {
+    if (filename.endsWith('.html')) return 'html';
+    if (filename.endsWith('.css')) return 'css';
+    if (filename.endsWith('.js') || filename.endsWith('.javascript')) return 'javascript';
+    // Default based on common patterns
+    if (filename.includes('index')) return 'html';
+    if (filename.includes('style')) return 'css';
+    return 'javascript';
+  };
+
+  // Helper function to ensure files have the correct structure
+  const normalizeFiles = (rawFiles: any): ProjectFiles => {
+    const normalized: ProjectFiles = {};
+    for (const [filename, fileData] of Object.entries(rawFiles)) {
+      if (typeof fileData === 'object' && fileData !== null) {
+        normalized[filename] = {
+          content: (fileData as any).content || '',
+          type: (fileData as any).type || inferFileType(filename)
+        };
+      }
+    }
+    return normalized;
+  };
+
   // Set files when project loads
   useEffect(() => {
     if (project) {
-      setFiles(project.files as ProjectFiles);
+      setFiles(normalizeFiles(project.files));
       setProjectTitle(project.title || 'Untitled Project');
     }
   }, [project]);
 
   const iterateMutation = useMutation({
     mutationFn: async (prompt: string) => {
-      const response = await fetchClient.POST('/api/ai/iterate', {
+      const response = await fetchClient.POST('/api/iterate/fast', {
         body: {
           prompt,
           projectId,
-          currentFiles: files,
         },
       });
       
-      if (response.error) {
-        throw new Error(response.error.message || 'Failed to iterate on project');
+      if (!response.data) {
+        throw new Error('Failed to iterate on project');
       }
       
       return response.data;
     },
     onSuccess: (data) => {
       if (data?.files) {
-        setFiles(data.files as ProjectFiles);
+        setFiles(normalizeFiles(data.files));
         toast({
           title: 'Project updated!',
           description: 'Your changes have been applied.',

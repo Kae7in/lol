@@ -1,5 +1,4 @@
 import Groq from 'groq-sdk';
-import { EditOperation } from './edit-engine';
 
 export class GroqService {
   private client: Groq;
@@ -12,36 +11,29 @@ export class GroqService {
     this.client = new Groq({ apiKey: key });
   }
 
-  async analyzeEditRequest(
+  async rewriteFile(
     userRequest: string,
     fileContent: string,
     filePath: string
-  ): Promise<EditOperation[]> {
-    const systemPrompt = `You are an AI code editor assistant. Your task is to analyze user edit requests and return structured edit operations.
+  ): Promise<string> {
+    const systemPrompt = `You are a mechanical code editor. Apply the EXACT changes specified.
 
-You must respond with a JSON array of edit operations. Each operation should have:
-- type: 'insert' | 'replace' | 'delete'
-- file: the file path to edit
-- startLine: line number to start (1-based)
-- endLine: line number to end (1-based, only for replace/delete)
-- content: new content (only for insert/replace)
+IMPORTANT RULES:
+1. Return ONLY the complete rewritten file content
+2. NO markdown, NO explanations, NO comments
+3. Apply the changes EXACTLY as specified
+4. Keep everything else UNCHANGED
+5. If instructions say "Find X and replace with Y", do exactly that
 
-IMPORTANT: Line numbers are 1-based. The first line is line 1.
-
-Examples:
-- To change line 5: {"type": "replace", "file": "example.ts", "startLine": 5, "endLine": 5, "content": "new content"}
-- To insert after line 10: {"type": "insert", "file": "example.ts", "startLine": 11, "content": "new line"}
-- To delete lines 3-7: {"type": "delete", "file": "example.ts", "startLine": 3, "endLine": 7}
-
-Return ONLY the JSON array, no explanation or markdown.`;
+The response must be the exact file content that will be saved.`;
 
     const userPrompt = `File: ${filePath}
 Current content:
-\`\`\`
 ${fileContent}
-\`\`\`
 
-User request: ${userRequest}`;
+Instructions to apply: ${userRequest}
+
+Apply these changes and return the complete updated file:`;
 
     try {
       const completion = await this.client.chat.completions.create({
@@ -49,9 +41,9 @@ User request: ${userRequest}`;
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        model: 'llama-3.1-70b-versatile',
+        model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
         temperature: 0.1,
-        max_tokens: 2000,
+        max_tokens: 4000,
       });
 
       const response = completion.choices[0]?.message?.content;
@@ -59,50 +51,9 @@ User request: ${userRequest}`;
         throw new Error('No response from Groq');
       }
 
-      // Parse the JSON response
-      const operations = JSON.parse(response) as EditOperation[];
-      
-      // Validate operations
-      for (const op of operations) {
-        if (!op.type || !op.file) {
-          throw new Error('Invalid operation: missing type or file');
-        }
-        if (op.type === 'insert' && (op.startLine === undefined || op.content === undefined)) {
-          throw new Error('Insert operation requires startLine and content');
-        }
-        if (op.type === 'replace' && (op.startLine === undefined || op.endLine === undefined || op.content === undefined)) {
-          throw new Error('Replace operation requires startLine, endLine, and content');
-        }
-        if (op.type === 'delete' && (op.startLine === undefined || op.endLine === undefined)) {
-          throw new Error('Delete operation requires startLine and endLine');
-        }
-      }
-
-      return operations;
+      return response;
     } catch (error) {
-      if (error instanceof SyntaxError) {
-        throw new Error('Failed to parse Groq response as JSON');
-      }
-      throw error;
+      throw new Error(`Failed to rewrite file: ${error}`);
     }
-  }
-
-  async checkComplexity(userRequest: string): Promise<boolean> {
-    // Simple heuristic: if the request mentions creating new features,
-    // restructuring, or large-scale changes, it's complex
-    const complexKeywords = [
-      'create new',
-      'add feature',
-      'restructure',
-      'refactor',
-      'implement',
-      'architecture',
-      'multiple files',
-      'entire',
-      'all'
-    ];
-
-    const lowerRequest = userRequest.toLowerCase();
-    return !complexKeywords.some(keyword => lowerRequest.includes(keyword));
   }
 }

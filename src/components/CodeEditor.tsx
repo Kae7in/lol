@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { 
   FileCode, 
   FileText, 
@@ -150,13 +150,14 @@ export function CodeEditor({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border bg-background">
-        <div className="flex items-center justify-between p-2">
-          <Tabs value={activeFile} onValueChange={setActiveFile}>
+      <Tabs value={activeFile} onValueChange={setActiveFile} className="flex flex-col h-full">
+        <div className="border-b border-border bg-background">
+          <div className="flex items-center justify-between p-2">
             <div className="flex items-center gap-2">
               <TabsList className="h-auto p-0 bg-transparent">
                 {Object.keys(files).map((filename) => {
-                  const Icon = FILE_ICONS[files[filename].type];
+                  const fileType = files[filename]?.type || 'javascript';
+                  const Icon = FILE_ICONS[fileType] || FileCode;
                   return (
                     <TabsTrigger
                       key={filename}
@@ -233,9 +234,8 @@ export function CodeEditor({
                 </DialogContent>
               </Dialog>
             </div>
-          </Tabs>
 
-          {onSave && (
+            {onSave && (
             <Button 
               size="sm" 
               onClick={onSave}
@@ -246,13 +246,14 @@ export function CodeEditor({
               {isSaving ? 'Saving...' : 'Save'}
             </Button>
           )}
+          </div>
         </div>
-      </div>
 
-      <div className="flex-1 min-h-0">
-        {Object.entries(files).map(([filename, file]) => {
+        <div className="flex-1 min-h-0">
+          {Object.entries(files).map(([filename, file]) => {
           const getLanguageExtension = () => {
-            switch (file.type) {
+            const fileType = file?.type || 'javascript';
+            switch (fileType) {
               case 'javascript':
                 return javascript({ jsx: true, typescript: false });
               case 'html':
@@ -265,12 +266,10 @@ export function CodeEditor({
           };
 
           return (
-            <div
+            <TabsContent
               key={filename}
-              className={cn(
-                'h-full overflow-hidden',
-                activeFile === filename ? 'block' : 'hidden'
-              )}
+              value={filename}
+              className="h-full m-0 border-0 p-0 data-[state=inactive]:hidden"
             >
               <CodeMirror
                 value={file.content}
@@ -293,12 +292,13 @@ export function CodeEditor({
                   highlightSelectionMatches: true,
                   searchKeymap: true,
                 }}
-                placeholder={`Add your ${file.type.toUpperCase()} code here...`}
+                placeholder={`Add your ${file.type ? file.type.toUpperCase() : 'CODE'} here...`}
               />
-            </div>
+            </TabsContent>
           );
         })}
-      </div>
+        </div>
+      </Tabs>
     </div>
   );
 }

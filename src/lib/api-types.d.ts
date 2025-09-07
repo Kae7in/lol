@@ -399,6 +399,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/iterate/fast": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fast iteration on existing project using AI
+         * @description Uses Claude for analysis and Groq for execution. ~10x faster than full regeneration.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        projectId: string;
+                        prompt: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            id?: string;
+                            title?: string;
+                            files?: Record<string, never>;
+                            compiled?: string;
+                            version?: number;
+                            editedFiles?: string[];
+                            performanceMs?: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {

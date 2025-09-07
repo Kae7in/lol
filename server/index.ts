@@ -5,6 +5,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import { projectRoutes } from './routes/projects';
 import { aiRoutes } from './routes/ai';
 import { healthRoutes } from './routes/health';
+import { iterateRoutes } from './routes/iterate';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.local' });
@@ -76,6 +77,7 @@ server.register(swaggerUi, {
 server.register(healthRoutes, { prefix: '/api' });
 server.register(projectRoutes, { prefix: '/api/projects' });
 server.register(aiRoutes, { prefix: '/api/ai' });
+server.register(iterateRoutes, { prefix: '/api/iterate' });
 
 // Start server
 const start = async () => {
