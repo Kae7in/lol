@@ -43,6 +43,17 @@ async function testFastIteration() {
     console.log('📝 Edited files:', data.editedFiles ? data.editedFiles.join(', ') : 'none');
     console.log('🔢 New version:', data.version || 'unknown');
     
+    // Show validation errors if any
+    if (data.validation && data.validation.errors && data.validation.errors.length > 0) {
+      console.log(`\n⚠️  Validation Errors Found (${data.validation.errorCount}):`);
+      data.validation.errors.forEach(error => {
+        console.log(`   ${error.file}:${error.line}:${error.column} - ${error.type}: ${error.message}`);
+      });
+      console.log('   These errors will be included in the next prompt for automatic fixing');
+    } else if (data.validation && data.validation.valid) {
+      console.log('\n✅ No syntax errors detected');
+    }
+    
     console.log('\n⏱️  Performance:');
     console.log(`   Total time: ${elapsed}ms (${(elapsed/1000).toFixed(2)}s)`);
     console.log(`   Server reported: ${data.performanceMs}ms`);
