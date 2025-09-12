@@ -98,7 +98,7 @@ function EditProjectPage() {
 
   const iterateMutation = useMutation({
     mutationFn: async (prompt: string) => {
-      const response = await fetchClient.POST('/api/iterate/fast', {
+      const response = await fetchClient.POST('/api/iterate/ast', {
         body: {
           prompt,
           projectId,
