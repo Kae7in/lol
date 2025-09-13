@@ -34,6 +34,11 @@ Special integration with Anthropic's Claude Code SDK (`@anthropic-ai/claude-code
 - **ClaudeWorkspace Service**: Manages temporary workspaces for code generation
 - **File Management**: Reads existing files, applies changes, and returns updated code
 - **Smart Context**: Provides Claude with existing code context for better iterations
+- **Real-time Streaming**: Server-Sent Events (SSE) stream Claude's actions to the frontend, showing:
+  - File reading/writing operations as they happen
+  - Claude's thinking process and decisions
+  - Tool usage with minimal, inline display
+  - Loading animation while waiting for first response
 
 ## Project Structure
 
@@ -70,6 +75,7 @@ Special integration with Anthropic's Claude Code SDK (`@anthropic-ai/claude-code
 - `POST /api/iterate/:id` - Iterate on existing project (OpenAI)
 - `POST /api/iterate/ast/:id` - AST-based iteration (OpenAI)
 - `POST /api/iterate/claude` - Claude Code iteration (Anthropic)
+- `POST /api/iterate/claude/stream` - Claude Code iteration with SSE streaming (Anthropic)
 
 ## Database Schema
 
@@ -111,6 +117,18 @@ The Claude Code integration (`iterate-claude.ts`) uses a unique approach:
 4. Claude reads, modifies, and writes files directly
 5. Reads back the modified files
 6. Updates the database with new versions
+
+### Streaming Implementation
+The streaming feature (`/api/iterate/claude/stream`) provides real-time visibility:
+1. **Server-Sent Events (SSE)**: Uses SSE to stream messages from backend to frontend
+2. **Message Types**: Streams different message types (assistant, tool_use, tool_result, complete, error)
+3. **UI Feedback**: 
+   - Loading animation appears immediately after user sends message
+   - Tool operations (file reads/writes) shown as minimal inline text
+   - Assistant thinking messages displayed prominently
+   - Messages append to chat history for full audit trail
+4. **User Preferences**: Streaming can be toggled on/off, preference saved in localStorage
+5. **Visual Hierarchy**: User messages have colored backgrounds, assistant messages are transparent, tool calls are minimal text-only
 
 ### Known Issues & Workarounds
 

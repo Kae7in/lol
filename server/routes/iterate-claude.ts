@@ -5,6 +5,7 @@ import { db } from "../../src/db";
 import { projects } from "../../src/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { compileProject } from "../lib/compile";
+import crypto from "crypto";
 
 const workspace = new ClaudeWorkspace();
 
@@ -14,6 +15,163 @@ const IterateRequestSchema = z.object({
 });
 
 export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
+  // Streaming endpoint
+  server.post(
+    "/claude/stream",
+    {
+      schema: {
+        tags: ["ai", "streaming"],
+        summary: "Stream Claude Code generation steps",
+        description: "Uses Server-Sent Events to stream real-time updates from Claude Code SDK",
+        body: {
+          type: "object",
+          properties: {
+            projectId: { type: "string", format: "uuid" },
+            prompt: { type: "string", minLength: 1, maxLength: 5000 },
+          },
+          required: ["prompt"],
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as { projectId?: string; prompt: string };
+      
+      if (!body.prompt) {
+        return reply.code(400).send({ error: 'Prompt is required' });
+      }
+
+      // Set headers for SSE
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no' // Disable nginx buffering
+      });
+
+      try {
+        let existingFiles = {};
+        let version = 1;
+        let existingProject: any = null;
+
+        // If projectId is provided, fetch existing project files
+        if (body.projectId) {
+          const [project] = await db
+            .select()
+            .from(projects)
+            .where(eq(projects.id, body.projectId))
+            .limit(1);
+          
+          if (project && project.files && typeof project.files === 'object') {
+            existingFiles = project.files as Record<string, { content: string; type: string }>;
+            version = (project.version || 1) + 1;
+            existingProject = project;
+          }
+        }
+
+        // Start streaming generation
+        const streamGenerator = workspace.generateStream(body.prompt, existingFiles);
+        
+        // Set up heartbeat to keep connection alive
+        const heartbeatInterval = setInterval(() => {
+          reply.raw.write('event: heartbeat\ndata: {}\n\n');
+        }, 30000);
+
+        let finalFiles: Record<string, { content: string; type: string }> | null = null;
+
+        try {
+          // Stream messages to client
+          for await (const message of streamGenerator) {
+            // Store files if this is the complete message
+            if (message.type === 'complete' && message.data.files) {
+              finalFiles = message.data.files;
+            }
+
+            // Send message to client
+            const sseMessage = `event: message\ndata: ${JSON.stringify(message)}\n\n`;
+            reply.raw.write(sseMessage);
+          }
+
+          // After streaming is complete, save to database if we have files
+          if (finalFiles) {
+            const compiled = compileProject(finalFiles);
+            const compiledAt = new Date();
+            
+            if (body.projectId) {
+              // Update existing project
+              const updateData = {
+                files: finalFiles,
+                compiled,
+                compiledAt,
+                compileError: null,
+                version,
+                metadata: { 
+                  ...((existingProject?.metadata as any) || {}),
+                  lastIteratedBy: 'claude-code-stream',
+                  lastIterationPrompt: body.prompt
+                },
+                updatedAt: new Date()
+              };
+              
+              const [updatedProject] = await db
+                .update(projects)
+                .set(updateData)
+                .where(eq(projects.id, body.projectId))
+                .returning();
+              
+              // Send final project update
+              reply.raw.write(`event: project\ndata: ${JSON.stringify({ project: updatedProject })}\n\n`);
+            } else {
+              // Create new project
+              const id = crypto.randomUUID();
+              const title = body.prompt.slice(0, 100);
+              
+              const [newProject] = await db
+                .insert(projects)
+                .values({
+                  id,
+                  title,
+                  files: finalFiles,
+                  compiled,
+                  compiledAt,
+                  compileError: null,
+                  version: 1,
+                  metadata: {
+                    createdBy: 'claude-code-stream',
+                    creationPrompt: body.prompt
+                  },
+                  createdAt: new Date(),
+                  updatedAt: new Date()
+                })
+                .returning();
+              
+              // Send final project creation
+              reply.raw.write(`event: project\ndata: ${JSON.stringify({ project: newProject })}\n\n`);
+            }
+          }
+
+          // Send done event
+          reply.raw.write('event: done\ndata: {}\n\n');
+        } finally {
+          clearInterval(heartbeatInterval);
+        }
+
+        // End the response
+        reply.raw.end();
+      } catch (error: any) {
+        console.error('Error in Claude stream:', error);
+        
+        // Send error event
+        const errorMessage = `event: error\ndata: ${JSON.stringify({ 
+          error: error.message || 'Failed to generate with Claude' 
+        })}\n\n`;
+        reply.raw.write(errorMessage);
+        reply.raw.end();
+      }
+    }
+  );
+
+  // Existing non-streaming endpoint
   server.post(
     "/claude",
     {
