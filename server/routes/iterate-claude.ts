@@ -6,6 +6,8 @@ import { projects } from "../../src/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { compileProject } from "../lib/compile";
 import crypto from "crypto";
+import { conversationService } from "../services/conversations";
+import { messageService } from "../services/messages";
 
 const workspace = new ClaudeWorkspace();
 
@@ -28,13 +30,14 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
           properties: {
             projectId: { type: "string", format: "uuid" },
             prompt: { type: "string", minLength: 1, maxLength: 5000 },
+            conversationId: { type: "string", format: "uuid", description: "Optional existing conversation ID" },
           },
           required: ["prompt"],
         },
       },
     },
     async (request, reply) => {
-      const body = request.body as { projectId?: string; prompt: string };
+      const body = request.body as { projectId?: string; prompt: string; conversationId?: string };
       
       if (!body.prompt) {
         return reply.code(400).send({ error: 'Prompt is required' });
@@ -48,6 +51,9 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
         'Access-Control-Allow-Origin': '*',
         'X-Accel-Buffering': 'no' // Disable nginx buffering
       });
+
+      let conversation: any = null;
+      let assistantMessage: any = null;
 
       try {
         let existingFiles = {};
@@ -69,6 +75,38 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
           }
         }
 
+        // Create or get conversation
+        conversation = await conversationService.getOrCreateConversation(
+          body.projectId,
+          body.conversationId
+        );
+
+        // Save user message immediately
+        const userMessage = await messageService.createMessage({
+          conversationId: conversation.id,
+          projectId: body.projectId,
+          role: 'user',
+          content: body.prompt,
+          streamingStatus: 'complete',
+          metadata: { timestamp: new Date().toISOString() }
+        });
+
+        // Send user message ID to client
+        reply.raw.write(`event: userMessage\ndata: ${JSON.stringify({ messageId: userMessage.id })}\n\n`);
+
+        // Create assistant message with pending status
+        assistantMessage = await messageService.createMessage({
+          conversationId: conversation.id,
+          projectId: body.projectId,
+          role: 'assistant',
+          content: '',
+          streamingStatus: 'pending',
+          metadata: { model: 'claude-code' }
+        });
+
+        // Send assistant message ID to client
+        reply.raw.write(`event: assistantMessage\ndata: ${JSON.stringify({ messageId: assistantMessage.id })}\n\n`);
+
         // Start streaming generation
         const streamGenerator = workspace.generateStream(body.prompt, existingFiles);
         
@@ -78,18 +116,103 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
         }, 30000);
 
         let finalFiles: Record<string, { content: string; type: string }> | null = null;
+        let assistantContent = '';
+        let toolMessages: any[] = [];
 
         try {
+          // Update assistant message to streaming status
+          await messageService.updateMessage(assistantMessage.id, {
+            streamingStatus: 'streaming'
+          });
+
           // Stream messages to client
           for await (const message of streamGenerator) {
-            // Store files if this is the complete message
-            if (message.type === 'complete' && message.data.files) {
+            // Handle different message types for persistence with error recovery
+            if (message.type === 'assistant') {
+              // Accumulate assistant content
+              assistantContent += message.data.content || '';
+              
+              // Update assistant message with accumulated content
+              try {
+                await messageService.updateMessage(assistantMessage.id, {
+                  content: assistantContent,
+                  streamingStatus: 'streaming'
+                });
+              } catch (dbError) {
+                console.error('Failed to update assistant message:', dbError);
+                // Continue streaming even if DB update fails
+              }
+            } else if (message.type === 'tool_use') {
+              // Save tool call as a separate message
+              try {
+                const toolMessage = await messageService.createMessage({
+                  conversationId: conversation.id,
+                  projectId: body.projectId,
+                  role: 'tool',
+                  content: message.data.toolInput?.prompt || JSON.stringify(message.data.toolInput || {}),
+                  toolName: message.data.tool,
+                  toolCall: message.data.toolInput,
+                  streamingStatus: 'complete',
+                  metadata: { toolId: message.data.id }
+                });
+                toolMessages.push(toolMessage);
+                
+                // Add tool message ID to the SSE event
+                message.data.messageId = toolMessage.id;
+              } catch (dbError) {
+                console.error('Failed to save tool message:', dbError);
+                // Continue without message ID
+              }
+            } else if (message.type === 'tool_result') {
+              // Find corresponding tool message and update with result
+              const toolMsg = toolMessages.find(m => m.metadata?.toolId === message.data.id);
+              if (toolMsg) {
+                try {
+                  await messageService.updateMessage(toolMsg.id, {
+                    toolResult: message.data.toolOutput,
+                    metadata: { ...toolMsg.metadata, hasResult: true }
+                  });
+                } catch (dbError) {
+                  console.error('Failed to update tool result:', dbError);
+                  // Continue streaming
+                }
+              }
+            } else if (message.type === 'complete' && message.data.files) {
+              // Store files for later
               finalFiles = message.data.files;
+            } else if (message.type === 'error') {
+              // Mark assistant message as error
+              try {
+                await messageService.markStreamingError(assistantMessage.id, message.data.error);
+              } catch (dbError) {
+                console.error('Failed to mark message error:', dbError);
+              }
             }
 
-            // Send message to client
-            const sseMessage = `event: message\ndata: ${JSON.stringify(message)}\n\n`;
+            // Send message to client with message IDs
+            const enrichedMessage = {
+              ...message,
+              messageId: message.type === 'assistant' ? assistantMessage.id : undefined,
+              conversationId: conversation.id
+            };
+            const sseMessage = `event: message\ndata: ${JSON.stringify(enrichedMessage)}\n\n`;
             reply.raw.write(sseMessage);
+          }
+
+          // Mark assistant message as complete with proper content
+          const finalAssistantContent = assistantContent || 
+            (finalFiles ? 'I\'ve updated your project files. Check the preview on the right.' : 
+             'I\'ve processed your request.');
+          await messageService.completeStreaming(assistantMessage.id, finalAssistantContent);
+
+          // Update conversation title if this is the first message
+          if (!body.conversationId && conversation.id && !conversation.title) {
+            try {
+              const title = body.prompt.slice(0, 100);
+              await conversationService.updateConversation(conversation.id, { title });
+            } catch (dbError) {
+              console.error('Failed to update conversation title:', dbError);
+            }
           }
 
           // After streaming is complete, save to database if we have files
@@ -161,9 +284,20 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
       } catch (error: any) {
         console.error('Error in Claude stream:', error);
         
+        // Try to mark assistant message as error if it exists
+        if (assistantMessage?.id) {
+          try {
+            await messageService.markStreamingError(assistantMessage.id, error.message);
+          } catch (dbError) {
+            console.error('Failed to update message error status:', dbError);
+          }
+        }
+        
         // Send error event
         const errorMessage = `event: error\ndata: ${JSON.stringify({ 
-          error: error.message || 'Failed to generate with Claude' 
+          error: error.message || 'Failed to generate with Claude',
+          conversationId: conversation?.id,
+          messageId: assistantMessage?.id
         })}\n\n`;
         reply.raw.write(errorMessage);
         reply.raw.end();

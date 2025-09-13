@@ -4,6 +4,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Loader2, Send, Sparkles, User, FileText, Edit, Check, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useClaudeStream, type StreamMessage } from '@/hooks/useClaudeStream';
+import { useConversation, useMessages, type Message as PersistedMessage } from '@/hooks/useConversation';
 
 interface Message {
   id: string;
@@ -18,7 +19,7 @@ interface AIChatStreamingProps {
   onProjectUpdate?: (project: any) => void;
   isGenerating: boolean;
   projectId?: string;
-  useStreaming: boolean;
+  conversationId?: string;
 }
 
 interface StreamingIndicator {
@@ -96,14 +97,22 @@ function getStreamingIndicator(message: StreamMessage): StreamingIndicator | nul
   return null;
 }
 
-export function AIChatStreaming({ 
-  onGenerate, 
-  onStreamComplete, 
+export function AIChatStreaming({
+  onGenerate,
+  onStreamComplete,
   onProjectUpdate,
-  isGenerating, 
+  isGenerating,
   projectId,
-  useStreaming 
+  conversationId: initialConversationId
 }: AIChatStreamingProps) {
+  const [localConversationId, setLocalConversationId] = useState<string | undefined>(initialConversationId);
+  
+  // Update local conversation ID when prop changes
+  useEffect(() => {
+    if (initialConversationId && initialConversationId !== localConversationId) {
+      setLocalConversationId(initialConversationId);
+    }
+  }, [initialConversationId]);
   const [messages, setMessages] = useState<Message[]>(() => [
     {
       id: '1',
@@ -120,12 +129,109 @@ export function AIChatStreaming({
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Use persisted conversation and messages hooks
+  const { conversation, createConversation, loading: conversationLoading } = useConversation(projectId, localConversationId);
+  const { 
+    messages: persistedMessages, 
+    addMessage: addPersistedMessage,
+    updateMessage: updatePersistedMessage,
+    refresh: refreshMessages,
+    loading: messagesLoading,
+    hasMore,
+    loadMore
+  } = useMessages(localConversationId);
+
+  // Load persisted messages on mount or when conversation changes
+  useEffect(() => {
+    if (persistedMessages && persistedMessages.length > 0) {
+      const convertedMessages: Message[] = [];
+      let lastAssistantMessage: Message | null = null;
+      
+      for (const msg of persistedMessages) {
+        if (msg.role === 'user') {
+          // Add user messages as-is
+          convertedMessages.push({
+            id: msg.id,
+            role: 'user',
+            content: msg.content || '',
+            timestamp: new Date(msg.createdAt)
+          });
+          lastAssistantMessage = null; // Reset when we see a user message
+        } else if (msg.role === 'assistant') {
+          // For assistant messages, use the content if available
+          if (msg.content && msg.content.trim()) {
+            const assistantMsg: Message = {
+              id: msg.id,
+              role: 'assistant',
+              content: msg.content,
+              timestamp: new Date(msg.createdAt)
+            };
+            convertedMessages.push(assistantMsg);
+            lastAssistantMessage = assistantMsg;
+          } else if (!lastAssistantMessage) {
+            // If no content but no previous assistant message, add a placeholder
+            const assistantMsg: Message = {
+              id: msg.id,
+              role: 'assistant',
+              content: 'I\'ve updated your project. Check the preview on the right.',
+              timestamp: new Date(msg.createdAt)
+            };
+            convertedMessages.push(assistantMsg);
+            lastAssistantMessage = assistantMsg;
+          }
+        } else if (msg.role === 'tool' && msg.toolName) {
+          // Show tool usage context inline (similar to streaming view)
+          // This helps preserve what actions were taken
+          if (lastAssistantMessage) {
+            // If we have a last assistant message, we already showed the summary
+            // Tool details are stored but not displayed to keep UI clean
+          } else {
+            // If no assistant message yet, create one with tool context
+            const toolSummary = msg.toolName.includes('Read') ? 'Reading files...' :
+                               msg.toolName.includes('Write') ? 'Writing files...' :
+                               msg.toolName.includes('Edit') ? 'Editing files...' : 
+                               `Using ${msg.toolName}...`;
+            // Don't add tool messages as separate items, they're just context
+          }
+        }
+      }
+      
+      // Set messages or show welcome if empty
+      if (convertedMessages.length === 0) {
+        setMessages([{
+          id: '1',
+          role: 'system',
+          content: 'Welcome! Describe the web experience you want to create, and I\'ll generate it for you.',
+          timestamp: new Date(),
+        }]);
+      } else {
+        setMessages(convertedMessages);
+      }
+    } else {
+      // No persisted messages, show welcome
+      setMessages([{
+        id: '1',
+        role: 'system',
+        content: 'Welcome! Describe the web experience you want to create, and I\'ll generate it for you.',
+        timestamp: new Date(),
+      }]);
+    }
+  }, [persistedMessages]);
+
   const { status, streamGeneration } = useClaudeStream({
     onMessage: (message) => {
       console.log('Stream message:', message);
       setStreamingMessages(prev => [...prev, message]);
       // First message received, stop waiting
       setIsWaitingForResponse(false);
+      
+      // Handle conversation and message IDs from stream
+      if (message.conversationId && !localConversationId) {
+        setLocalConversationId(message.conversationId);
+      }
+      
+      // Don't refresh during streaming to avoid flicker
+      // We'll refresh once at the end when complete
     },
     onComplete: (files) => {
       console.log('Stream complete with files:', files);
@@ -133,14 +239,9 @@ export function AIChatStreaming({
         onStreamComplete(files);
       }
       
-      // Add assistant message
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'I\'ve generated your project! Check the preview on the right.',
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      // Refresh messages to get the final state from DB
+      refreshMessages();
+      
       // Clear streaming messages after completion
       setStreamingMessages([]);
       setIsWaitingForResponse(false);
@@ -179,6 +280,16 @@ export function AIChatStreaming({
   const handleSubmit = async () => {
     if (!input.trim() || isGenerating || status.isStreaming) return;
 
+    // Create conversation if it doesn't exist
+    let conversationId = localConversationId;
+    if (!conversationId && projectId) {
+      const newConversation = await createConversation(input.trim().slice(0, 100));
+      if (newConversation && 'id' in newConversation) {
+        conversationId = newConversation.id;
+        setLocalConversationId(conversationId);
+      }
+    }
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -190,25 +301,12 @@ export function AIChatStreaming({
     const prompt = input.trim();
     setInput('');
 
-    if (useStreaming) {
-      // Clear previous streaming messages when starting new generation
-      setStreamingMessages([]);
-      // Show waiting animation
-      setIsWaitingForResponse(true);
-      // Use streaming
-      await streamGeneration(prompt, projectId);
-    } else {
-      // Use regular generation
-      await onGenerate(prompt);
-      
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'I\'ve generated your project! Check the preview on the right.',
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-    }
+    // Clear previous streaming messages when starting new generation
+    setStreamingMessages([]);
+    // Show waiting animation
+    setIsWaitingForResponse(true);
+    // Use streaming with conversation ID
+    await streamGeneration(prompt, projectId, conversationId);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -235,15 +333,35 @@ export function AIChatStreaming({
         <h2 className="text-xl font-semibold flex items-center gap-2">
           <Sparkles className="h-5 w-5" />
           AI Editor
-          {useStreaming && (
-            <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-              Streaming
+          {localConversationId && (
+            <span className="text-xs text-muted-foreground">
+              #{localConversationId.slice(0, 8)}
             </span>
           )}
         </h2>
       </div>
 
       <div className="flex-1 p-4 overflow-y-auto" ref={scrollAreaRef}>
+        {messagesLoading && messages.length === 0 && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <span className="ml-2 text-muted-foreground">Loading conversation...</span>
+          </div>
+        )}
+        
+        {hasMore && !messagesLoading && (
+          <div className="text-center pb-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={loadMore}
+              disabled={messagesLoading}
+            >
+              Load earlier messages
+            </Button>
+          </div>
+        )}
+        
         <div className="space-y-4">
           {messages.map((message) => (
             <div
@@ -367,20 +485,6 @@ export function AIChatStreaming({
             );
           })}
 
-          {/* Regular loading indicator (non-streaming) */}
-          {isGenerating && !useStreaming && (
-            <div className="flex gap-3">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                <Sparkles className="h-4 w-4" />
-              </div>
-              <div className="flex-1 rounded-lg bg-muted px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <p className="text-sm">Generating your project...</p>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 

@@ -3,12 +3,10 @@ import cors from '@fastify/cors';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { projectRoutes } from './routes/projects';
-import { aiRoutes } from './routes/ai';
 import { healthRoutes } from './routes/health';
-import { iterateRoutes } from './routes/iterate';
-import { iterateASTRoutes } from './routes/iterate-ast';
 import { claudeRoutes } from './routes/claude-generate';
 import { iterateClaudeRoutes } from './routes/iterate-claude';
+import conversationsRoutes from './routes/conversations';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.local' });
@@ -79,11 +77,9 @@ server.register(swaggerUi, {
 // Register routes
 server.register(healthRoutes, { prefix: '/api' });
 server.register(projectRoutes, { prefix: '/api/projects' });
-server.register(aiRoutes, { prefix: '/api/ai' });
 server.register(claudeRoutes, { prefix: '/api/ai' });
-server.register(iterateRoutes, { prefix: '/api/iterate' });
-server.register(iterateASTRoutes, { prefix: '/api/iterate' });
 server.register(iterateClaudeRoutes, { prefix: '/api/iterate' });
+server.register(conversationsRoutes);
 
 // Start server
 const start = async () => {

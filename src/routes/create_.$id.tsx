@@ -4,13 +4,11 @@ import { useMutation } from '@tanstack/react-query';
 import { fetchClient, $api } from '@/lib/api-client';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
-import { AIChat } from '@/components/AIChat';
 import { AIChatStreaming } from '@/components/AIChatStreaming';
 import { CodeEditor, type ProjectFiles } from '@/components/CodeEditor';
 import { PreviewToggle } from '@/components/PreviewToggle';
 import { useNavigate } from '@tanstack/react-router';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
+import { useConversationList } from '@/hooks/useConversation';
 
 export const Route = createFileRoute('/create_/$id')({
   component: EditProjectPage,
@@ -48,24 +46,13 @@ function EditProjectPage() {
   const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
   const [files, setFiles] = useState<ProjectFiles>({});
   const [projectTitle, setProjectTitle] = useState<string>('Untitled Project');
-  const [useClaudeCode, setUseClaudeCode] = useState(true);
-  const [useStreaming, setUseStreaming] = useState(true);
+  const [currentConversationId, setCurrentConversationId] = useState<string | undefined>();
   
   const { toast } = useToast();
+  
+  // Get conversations for this project
+  const { conversations } = useConversationList(projectId);
 
-  // Load and save streaming preference to localStorage
-  useEffect(() => {
-    // Load preference on client side
-    const stored = localStorage.getItem('useStreaming');
-    if (stored !== null) {
-      setUseStreaming(stored === 'true');
-    }
-  }, []);
-
-  useEffect(() => {
-    // Save preference when it changes
-    localStorage.setItem('useStreaming', useStreaming.toString());
-  }, [useStreaming]);
 
   // Fetch the existing project
   const { data: project, isLoading: isLoadingProject, refetch: refetchProject } = $api.useQuery(
@@ -114,21 +101,28 @@ function EditProjectPage() {
       setProjectTitle(project.title || 'Untitled Project');
     }
   }, [project]);
+  
+  // Set the most recent conversation for this project
+  useEffect(() => {
+    if (conversations && conversations.length > 0) {
+      // Use the most recent conversation (they're sorted by createdAt desc)
+      setCurrentConversationId(conversations[0].id);
+    }
+  }, [conversations]);
 
   const iterateMutation = useMutation({
     mutationFn: async (prompt: string) => {
-      const endpoint = useClaudeCode ? '/api/iterate/claude' : '/api/iterate/ast';
-      const response = await fetchClient.POST(endpoint as any, {
+      const response = await fetchClient.POST('/api/iterate/claude' as any, {
         body: {
           prompt,
           projectId,
         },
       });
-      
+
       if (!response.data) {
         throw new Error('Failed to iterate on project');
       }
-      
+
       return response.data;
     },
     onSuccess: (data) => {
@@ -244,21 +238,14 @@ function EditProjectPage() {
     <div className="flex h-screen bg-background">
       {/* Left Panel - AI Chat */}
       <div className="w-1/3 border-r border-border flex flex-col">
-        {useStreaming && useClaudeCode ? (
-          <AIChatStreaming
-            onGenerate={handleGenerate}
-            onStreamComplete={handleStreamComplete}
-            onProjectUpdate={handleProjectUpdate}
-            isGenerating={isGenerating}
-            projectId={projectId}
-            useStreaming={useStreaming}
-          />
-        ) : (
-          <AIChat 
-            onGenerate={handleGenerate}
-            isGenerating={isGenerating}
-          />
-        )}
+        <AIChatStreaming
+          onGenerate={handleGenerate}
+          onStreamComplete={handleStreamComplete}
+          onProjectUpdate={handleProjectUpdate}
+          isGenerating={isGenerating}
+          projectId={projectId}
+          conversationId={currentConversationId}
+        />
       </div>
 
       {/* Right Panel - Preview/Code */}
@@ -266,31 +253,7 @@ function EditProjectPage() {
         <div className="p-4 border-b border-border flex justify-between items-center bg-background">
           <h2 className="text-xl font-semibold">{projectTitle}</h2>
           <div className="flex items-center gap-4">
-            <div className="flex items-center space-x-2">
-              <Switch
-                id="claude-code-toggle-edit"
-                checked={useClaudeCode}
-                onCheckedChange={setUseClaudeCode}
-                disabled={isGenerating}
-              />
-              <Label htmlFor="claude-code-toggle-edit" className="text-sm">
-                Claude Code
-              </Label>
-            </div>
-            {useClaudeCode && (
-              <div className="flex items-center space-x-2">
-                <Switch
-                  id="streaming-toggle-edit"
-                  checked={useStreaming}
-                  onCheckedChange={setUseStreaming}
-                  disabled={isGenerating}
-                />
-                <Label htmlFor="streaming-toggle-edit" className="text-sm">
-                  Streaming
-                </Label>
-              </div>
-            )}
-            <PreviewToggle 
+            <PreviewToggle
               mode={viewMode}
               onModeChange={setViewMode}
             />

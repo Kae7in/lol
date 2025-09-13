@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 
 export interface StreamMessage {
-  type: 'assistant' | 'tool_use' | 'tool_result' | 'complete' | 'error';
+  type: 'assistant' | 'tool_use' | 'tool_result' | 'complete' | 'error' | 'userMessage' | 'assistantMessage';
   data: {
     content?: string;
     tool?: string;
@@ -9,7 +9,10 @@ export interface StreamMessage {
     toolOutput?: any;
     files?: Record<string, { content: string; type: string }>;
     error?: string;
+    messageId?: string;
   };
+  conversationId?: string;
+  messageId?: string;
   timestamp: number;
 }
 
@@ -177,10 +180,11 @@ export function useClaudeStream(options: UseClaudeStreamOptions = {}) {
 
   const streamGeneration = useCallback(async (
     prompt: string,
-    projectId?: string
+    projectId?: string,
+    conversationId?: string
   ) => {
     try {
-      const body = JSON.stringify({ prompt, projectId });
+      const body = JSON.stringify({ prompt, projectId, conversationId });
       
       // Use the same base URL as the API client
       const baseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
