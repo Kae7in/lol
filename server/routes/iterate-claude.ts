@@ -199,10 +199,11 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
             reply.raw.write(sseMessage);
           }
 
-          // Mark assistant message as complete with proper content
-          const finalAssistantContent = assistantContent || 
-            (finalFiles ? 'I\'ve updated your project files. Check the preview on the right.' : 
-             'I\'ve processed your request.');
+          // Mark assistant message as complete with a summary
+          // Use a generic summary since the detailed actions are in tool messages
+          const finalAssistantContent = finalFiles ? 
+            'I\'ve updated your project. Check the preview on the right.' : 
+            (assistantContent || 'I\'ve processed your request.');
           await messageService.completeStreaming(assistantMessage.id, finalAssistantContent);
 
           // Update conversation title if this is the first message

@@ -123,18 +123,15 @@ export function AIChatStreaming({
   ]);
   const [input, setInput] = useState('');
   const [isClient, setIsClient] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
   const [streamingMessages, setStreamingMessages] = useState<StreamMessage[]>([]);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Use persisted conversation and messages hooks
-  const { conversation, createConversation, loading: conversationLoading } = useConversation(projectId, localConversationId);
+  const { createConversation } = useConversation(projectId, localConversationId);
   const { 
     messages: persistedMessages, 
-    addMessage: addPersistedMessage,
-    updateMessage: updatePersistedMessage,
     refresh: refreshMessages,
     loading: messagesLoading,
     hasMore,
@@ -145,54 +142,91 @@ export function AIChatStreaming({
   useEffect(() => {
     if (persistedMessages && persistedMessages.length > 0) {
       const convertedMessages: Message[] = [];
-      let lastAssistantMessage: Message | null = null;
+      let currentAssistantGroup: { assistant?: Message; tools: Array<{ message: PersistedMessage; indicator: StreamingIndicator }> } | null = null;
       
       for (const msg of persistedMessages) {
         if (msg.role === 'user') {
-          // Add user messages as-is
+          // Finalize any pending assistant group
+          if (currentAssistantGroup) {
+            if (currentAssistantGroup.assistant) {
+              convertedMessages.push(currentAssistantGroup.assistant);
+            }
+            // Add tool messages as metadata for display
+            if (currentAssistantGroup.tools.length > 0 && currentAssistantGroup.assistant) {
+              (currentAssistantGroup.assistant as any).toolMessages = currentAssistantGroup.tools;
+            }
+            currentAssistantGroup = null;
+          }
+          
+          // Add user message
           convertedMessages.push({
             id: msg.id,
             role: 'user',
             content: msg.content || '',
             timestamp: new Date(msg.createdAt)
           });
-          lastAssistantMessage = null; // Reset when we see a user message
         } else if (msg.role === 'assistant') {
-          // For assistant messages, use the content if available
-          if (msg.content && msg.content.trim()) {
-            const assistantMsg: Message = {
-              id: msg.id,
-              role: 'assistant',
-              content: msg.content,
-              timestamp: new Date(msg.createdAt)
-            };
-            convertedMessages.push(assistantMsg);
-            lastAssistantMessage = assistantMsg;
-          } else if (!lastAssistantMessage) {
-            // If no content but no previous assistant message, add a placeholder
-            const assistantMsg: Message = {
-              id: msg.id,
-              role: 'assistant',
-              content: 'I\'ve updated your project. Check the preview on the right.',
-              timestamp: new Date(msg.createdAt)
-            };
-            convertedMessages.push(assistantMsg);
-            lastAssistantMessage = assistantMsg;
+          // Start or update assistant group
+          if (!currentAssistantGroup) {
+            currentAssistantGroup = { tools: [] };
           }
+          
+          // Create assistant message with proper content
+          const assistantContent = msg.content && msg.content.trim() ? 
+            msg.content : 
+            'I\'ve updated your project. Check the preview on the right.';
+          
+          currentAssistantGroup.assistant = {
+            id: msg.id,
+            role: 'assistant',
+            content: assistantContent,
+            timestamp: new Date(msg.createdAt)
+          };
         } else if (msg.role === 'tool' && msg.toolName) {
-          // Show tool usage context inline (similar to streaming view)
-          // This helps preserve what actions were taken
-          if (lastAssistantMessage) {
-            // If we have a last assistant message, we already showed the summary
-            // Tool details are stored but not displayed to keep UI clean
+          // Create tool indicator for display
+          let indicator: StreamingIndicator | null = null;
+          
+          if (msg.toolName === 'Read') {
+            const filePath = msg.toolCall?.file_path || '';
+            const fileName = filePath ? filePath.split('/').pop() : 'file';
+            indicator = {
+              icon: <FileText className="h-3 w-3" />,
+              message: `Reading ${fileName}`,
+              color: 'text-blue-500'
+            };
+          } else if (msg.toolName === 'Write' || msg.toolName === 'Edit') {
+            const filePath = msg.toolCall?.file_path || '';
+            const fileName = filePath ? filePath.split('/').pop() : 'file';
+            indicator = {
+              icon: <Edit className="h-3 w-3" />,
+              message: `Writing ${fileName}`,
+              color: 'text-green-500'
+            };
           } else {
-            // If no assistant message yet, create one with tool context
-            const toolSummary = msg.toolName.includes('Read') ? 'Reading files...' :
-                               msg.toolName.includes('Write') ? 'Writing files...' :
-                               msg.toolName.includes('Edit') ? 'Editing files...' : 
-                               `Using ${msg.toolName}...`;
-            // Don't add tool messages as separate items, they're just context
+            indicator = {
+              icon: <Sparkles className="h-3 w-3" />,
+              message: `Using ${msg.toolName}`,
+              color: 'text-purple-500'
+            };
           }
+          
+          if (indicator) {
+            if (!currentAssistantGroup) {
+              currentAssistantGroup = { tools: [] };
+            }
+            currentAssistantGroup.tools.push({ message: msg, indicator });
+          }
+        }
+      }
+      
+      // Finalize any remaining assistant group
+      if (currentAssistantGroup) {
+        if (currentAssistantGroup.assistant) {
+          // Add tool messages as metadata
+          if (currentAssistantGroup.tools.length > 0) {
+            (currentAssistantGroup.assistant as any).toolMessages = currentAssistantGroup.tools;
+          }
+          convertedMessages.push(currentAssistantGroup.assistant);
         }
       }
       
@@ -364,48 +398,68 @@ export function AIChatStreaming({
         
         <div className="space-y-4">
           {messages.map((message) => (
-            <div
-              key={message.id}
-              className={cn(
-                'flex gap-3',
-                message.role === 'user' && 'flex-row-reverse'
+            <React.Fragment key={message.id}>
+              <div
+                className={cn(
+                  'flex gap-3',
+                  message.role === 'user' && 'flex-row-reverse'
+                )}
+              >
+                <div
+                  className={cn(
+                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+                    message.role === 'user'
+                      ? 'bg-primary text-primary-foreground'
+                      : ''
+                  )}
+                >
+                  {message.role === 'user' ? (
+                    <User className="h-4 w-4" />
+                  ) : (
+                    <Sparkles className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </div>
+                <div
+                  className={cn(
+                    'flex-1',
+                    message.role === 'user' && 'rounded-lg px-3 py-2 bg-primary text-primary-foreground'
+                  )}
+                >
+                  <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  {isClient && (
+                    <p
+                      className={cn(
+                        'text-xs mt-1',
+                        message.role === 'user'
+                          ? 'text-primary-foreground/70'
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      {message.timestamp.toLocaleTimeString()}
+                    </p>
+                  )}
+                </div>
+              </div>
+              
+              {/* Display tool messages inline if they exist (for persisted messages) */}
+              {message.role === 'assistant' && (message as any).toolMessages && (
+                <>
+                  {(message as any).toolMessages.map((tool: any, idx: number) => (
+                    <div
+                      key={`${message.id}-tool-${idx}`}
+                      className="ml-11 flex items-center gap-1.5 py-0.5"
+                    >
+                      <span className={cn(tool.indicator.color, "opacity-60")}>
+                        {tool.indicator.icon}
+                      </span>
+                      <p className="text-xs text-muted-foreground">
+                        {tool.indicator.message}
+                      </p>
+                    </div>
+                  ))}
+                </>
               )}
-            >
-              <div
-                className={cn(
-                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-                  message.role === 'user'
-                    ? 'bg-primary text-primary-foreground'
-                    : ''
-                )}
-              >
-                {message.role === 'user' ? (
-                  <User className="h-4 w-4" />
-                ) : (
-                  <Sparkles className="h-4 w-4 text-muted-foreground" />
-                )}
-              </div>
-              <div
-                className={cn(
-                  'flex-1',
-                  message.role === 'user' && 'rounded-lg px-3 py-2 bg-primary text-primary-foreground'
-                )}
-              >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                {isClient && (
-                  <p
-                    className={cn(
-                      'text-xs mt-1',
-                      message.role === 'user'
-                        ? 'text-primary-foreground/70'
-                        : 'text-muted-foreground'
-                    )}
-                  >
-                    {message.timestamp.toLocaleTimeString()}
-                  </p>
-                )}
-              </div>
-            </div>
+            </React.Fragment>
           ))}
 
           {/* Initial loading animation when waiting for first response */}
@@ -440,9 +494,7 @@ export function AIChatStreaming({
                   {item.indicator && (
                     <>
                       <span className={cn(item.indicator.color, "opacity-60")}>
-                        {React.cloneElement(item.indicator.icon as React.ReactElement, {
-                          className: "h-3 w-3"
-                        })}
+                        {item.indicator.icon}
                       </span>
                       <p className="text-xs text-muted-foreground">
                         {item.indicator.message}
