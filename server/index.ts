@@ -7,6 +7,8 @@ import { aiRoutes } from './routes/ai';
 import { healthRoutes } from './routes/health';
 import { iterateRoutes } from './routes/iterate';
 import { iterateASTRoutes } from './routes/iterate-ast';
+import { claudeRoutes } from './routes/claude-generate';
+import { iterateClaudeRoutes } from './routes/iterate-claude';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.local' });
@@ -78,8 +80,10 @@ server.register(swaggerUi, {
 server.register(healthRoutes, { prefix: '/api' });
 server.register(projectRoutes, { prefix: '/api/projects' });
 server.register(aiRoutes, { prefix: '/api/ai' });
+server.register(claudeRoutes, { prefix: '/api/ai' });
 server.register(iterateRoutes, { prefix: '/api/iterate' });
 server.register(iterateASTRoutes, { prefix: '/api/iterate' });
+server.register(iterateClaudeRoutes, { prefix: '/api/iterate' });
 
 // Start server
 const start = async () => {

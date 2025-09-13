@@ -8,6 +8,8 @@ import { AIChat } from '@/components/AIChat';
 import { CodeEditor, type ProjectFiles } from '@/components/CodeEditor';
 import { PreviewToggle } from '@/components/PreviewToggle';
 import { useNavigate } from '@tanstack/react-router';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 
 export const Route = createFileRoute('/create_/$id')({
   component: EditProjectPage,
@@ -45,6 +47,7 @@ function EditProjectPage() {
   const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
   const [files, setFiles] = useState<ProjectFiles>({});
   const [projectTitle, setProjectTitle] = useState<string>('Untitled Project');
+  const [useClaudeCode, setUseClaudeCode] = useState(true);
   
   const { toast } = useToast();
 
@@ -98,7 +101,8 @@ function EditProjectPage() {
 
   const iterateMutation = useMutation({
     mutationFn: async (prompt: string) => {
-      const response = await fetchClient.POST('/api/iterate/ast', {
+      const endpoint = useClaudeCode ? '/api/iterate/claude' : '/api/iterate/ast';
+      const response = await fetchClient.POST(endpoint as any, {
         body: {
           prompt,
           projectId,
@@ -220,10 +224,23 @@ function EditProjectPage() {
       <div className="w-2/3 flex flex-col">
         <div className="p-4 border-b border-border flex justify-between items-center bg-background">
           <h2 className="text-xl font-semibold">{projectTitle}</h2>
-          <PreviewToggle 
-            mode={viewMode}
-            onModeChange={setViewMode}
-          />
+          <div className="flex items-center gap-4">
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="claude-code-toggle-edit"
+                checked={useClaudeCode}
+                onCheckedChange={setUseClaudeCode}
+                disabled={isGenerating}
+              />
+              <Label htmlFor="claude-code-toggle-edit" className="text-sm">
+                Claude Code
+              </Label>
+            </div>
+            <PreviewToggle 
+              mode={viewMode}
+              onModeChange={setViewMode}
+            />
+          </div>
         </div>
         
         <div className="flex-1 overflow-hidden">

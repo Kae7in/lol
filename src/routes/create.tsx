@@ -7,6 +7,8 @@ import { Loader2, Sparkles } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 
 export const Route = createFileRoute('/create')({
   component: CreatePage,
@@ -15,11 +17,13 @@ export const Route = createFileRoute('/create')({
 function CreatePage() {
   const navigate = useNavigate();
   const [prompt, setPrompt] = useState('');
+  const [useClaudeCode, setUseClaudeCode] = useState(true);
   const { toast } = useToast();
 
   const generateMutation = useMutation({
     mutationFn: async (prompt: string) => {
-      const response = await fetchClient.POST('/api/ai/generate', {
+      const endpoint = useClaudeCode ? '/api/ai/generate-claude' : '/api/ai/generate';
+      const response = await fetchClient.POST(endpoint as any, {
         body: { prompt },
       });
       
@@ -79,6 +83,19 @@ function CreatePage() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="flex items-center justify-between p-4 bg-muted/50 rounded-lg">
+            <Label htmlFor="claude-code-toggle" className="flex items-center space-x-2">
+              <span>Use Claude Code SDK</span>
+              <span className="text-xs text-muted-foreground">(Experimental)</span>
+            </Label>
+            <Switch
+              id="claude-code-toggle"
+              checked={useClaudeCode}
+              onCheckedChange={setUseClaudeCode}
+              disabled={generateMutation.isPending}
+            />
+          </div>
+          
           <Textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
