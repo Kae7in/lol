@@ -180,7 +180,8 @@ export function AIChatStreaming({
               content: '',
               timestamp: new Date(msg.createdAt),
               toolIndicator: indicator,
-              toolName: msg.toolName
+              toolName: msg.toolName,
+              toolCall: msg.toolCall  // Include the toolCall data for the preview
             } as any);
           }
         }
@@ -357,13 +358,37 @@ export function AIChatStreaming({
             <React.Fragment key={message.id}>
               {/* Handle tool messages as standalone items */}
               {(message as any).role === 'tool' && (message as any).toolIndicator ? (
-                <div className="ml-11 flex items-center gap-1.5 py-0.5">
-                  <span className={cn((message as any).toolIndicator.color, "opacity-60")}>
-                    {(message as any).toolIndicator.icon}
-                  </span>
-                  <p className="text-xs text-muted-foreground">
-                    {(message as any).toolIndicator.message}
-                  </p>
+                <div className="ml-11 py-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn((message as any).toolIndicator.color, "opacity-60")}>
+                      {(message as any).toolIndicator.icon}
+                    </span>
+                    <p className="text-xs text-muted-foreground">
+                      {(message as any).toolIndicator.message}
+                    </p>
+                  </div>
+                  {/* Show code diff preview for Edit/Write tool calls */}
+                  {((message as any).toolName === 'Edit' || (message as any).toolName === 'Write') && (message as any).toolCall && (
+                    <div className="mt-2 ml-5 mr-4 rounded-md bg-zinc-900/50 border border-zinc-800/50 overflow-hidden relative text-xs font-mono">
+                      {((message as any).toolCall.old_string || (message as any).toolCall.oldString) && (
+                        <div className="flex items-start bg-red-500/20 px-3 py-2">
+                          <span className="text-red-400/80 mr-2">-</span>
+                          <div className="text-zinc-100 whitespace-pre-wrap line-clamp-3 flex-1">
+                            {(message as any).toolCall.old_string || (message as any).toolCall.oldString}
+                          </div>
+                        </div>
+                      )}
+                      {((message as any).toolCall.new_string || (message as any).toolCall.newString) && (
+                        <div className="flex items-start bg-green-500/20 px-3 py-2">
+                          <span className="text-green-400/80 mr-2">+</span>
+                          <div className="text-zinc-100 whitespace-pre-wrap line-clamp-3 flex-1">
+                            {(message as any).toolCall.new_string || (message as any).toolCall.newString}
+                          </div>
+                        </div>
+                      )}
+                      <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-zinc-900/50 to-transparent pointer-events-none"></div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>
@@ -464,17 +489,43 @@ export function AIChatStreaming({
               return (
                 <div
                   key={item.id}
-                  className="ml-11 flex items-center gap-1.5 animate-in fade-in-0 slide-in-from-bottom-1 duration-300 py-0.5"
+                  className="ml-11 py-0.5 animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
                 >
-                  {item.indicator && (
-                    <>
-                      <span className={cn(item.indicator.color, "opacity-60")}>
-                        {item.indicator.icon}
-                      </span>
-                      <p className="text-xs text-muted-foreground">
-                        {item.indicator.message}
-                      </p>
-                    </>
+                  <div className="flex items-center gap-1.5">
+                    {item.indicator && (
+                      <>
+                        <span className={cn(item.indicator.color, "opacity-60")}>
+                          {item.indicator.icon}
+                        </span>
+                        <p className="text-xs text-muted-foreground">
+                          {item.indicator.message}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  {/* Show code diff preview for Edit/Write tool calls during streaming */}
+                  {item.message.type === 'tool_use' && 
+                   (item.message.data.tool === 'Edit' || item.message.data.tool === 'Write') && 
+                   item.message.data.toolInput && (
+                    <div className="mt-2 ml-5 mr-4 rounded-md bg-zinc-900/50 border border-zinc-800/50 overflow-hidden relative text-xs font-mono">
+                      {item.message.data.toolInput.old_string && (
+                        <div className="flex items-start bg-red-500/20 px-3 py-2">
+                          <span className="text-red-400/80 mr-2">-</span>
+                          <div className="text-zinc-100 whitespace-pre-wrap line-clamp-3 flex-1">
+                            {item.message.data.toolInput.old_string}
+                          </div>
+                        </div>
+                      )}
+                      {item.message.data.toolInput.new_string && (
+                        <div className="flex items-start bg-green-500/20 px-3 py-2">
+                          <span className="text-green-400/80 mr-2">+</span>
+                          <div className="text-zinc-100 whitespace-pre-wrap line-clamp-3 flex-1">
+                            {item.message.data.toolInput.new_string}
+                          </div>
+                        </div>
+                      )}
+                      <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-zinc-900/50 to-transparent pointer-events-none"></div>
+                    </div>
                   )}
                 </div>
               );
@@ -504,6 +555,21 @@ export function AIChatStreaming({
               </div>
             );
           })}
+
+          {/* Show working indicator after the last streaming message */}
+          {formattedStreamingMessages.length > 0 && status.isStreaming && (
+            <div className="ml-11 py-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <div className="h-4 w-4 rounded-full bg-purple-500/20 animate-ping absolute"></div>
+                  <div className="h-4 w-4 rounded-full bg-purple-500/40 animate-pulse"></div>
+                </div>
+                <p className="text-xs text-muted-foreground animate-pulse">
+                  Working...
+                </p>
+              </div>
+            </div>
+          )}
 
         </div>
       </div>
