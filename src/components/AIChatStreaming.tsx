@@ -5,6 +5,7 @@ import { Loader2, Send, Sparkles, User, FileText, Edit, Check, X } from 'lucide-
 import { cn } from '@/lib/utils';
 import { useClaudeStream, type StreamMessage } from '@/hooks/useClaudeStream';
 import { useConversation, useMessages, type Message as PersistedMessage } from '@/hooks/useConversation';
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -56,13 +57,7 @@ function getStreamingIndicator(message: StreamMessage): StreamingIndicator | nul
   } else if (message.type === 'assistant' && message.data.content) {
     // Only show assistant messages if they have content
     const content = message.data.content.trim();
-    if (content.length > 100) {
-      return {
-        icon: <Sparkles className="h-4 w-4" />,
-        message: content.substring(0, 100) + '...',
-        color: 'text-purple-500'
-      };
-    } else if (content.length > 0) {
+    if (content.length > 0) {
       return {
         icon: <Sparkles className="h-4 w-4" />,
         message: content,
@@ -70,23 +65,11 @@ function getStreamingIndicator(message: StreamMessage): StreamingIndicator | nul
       };
     }
   } else if (message.type === 'tool_result') {
-    // Show tool results briefly
-    const result = typeof message.data.toolOutput === 'string' 
-      ? message.data.toolOutput 
-      : JSON.stringify(message.data.toolOutput);
-    if (result.includes('successfully') || result.includes('complete')) {
-      return {
-        icon: <Check className="h-3 w-3" />,
-        message: 'Success',
-        color: 'text-green-500 opacity-70'
-      };
-    }
+    // Don't show success messages - they're not needed
+    return null;
   } else if (message.type === 'complete') {
-    return {
-      icon: <Check className="h-4 w-4" />,
-      message: 'Generation complete!',
-      color: 'text-green-600'
-    };
+    // Don't show completion message, let the assistant's final message speak for itself
+    return null;
   } else if (message.type === 'error') {
     return {
       icon: <X className="h-4 w-4" />,
@@ -142,22 +125,10 @@ export function AIChatStreaming({
   useEffect(() => {
     if (persistedMessages && persistedMessages.length > 0) {
       const convertedMessages: Message[] = [];
-      let currentAssistantGroup: { assistant?: Message; tools: Array<{ message: PersistedMessage; indicator: StreamingIndicator }> } | null = null;
       
+      // Process messages in order, maintaining the same structure as streaming
       for (const msg of persistedMessages) {
         if (msg.role === 'user') {
-          // Finalize any pending assistant group
-          if (currentAssistantGroup) {
-            if (currentAssistantGroup.assistant) {
-              convertedMessages.push(currentAssistantGroup.assistant);
-            }
-            // Add tool messages as metadata for display
-            if (currentAssistantGroup.tools.length > 0 && currentAssistantGroup.assistant) {
-              (currentAssistantGroup.assistant as any).toolMessages = currentAssistantGroup.tools;
-            }
-            currentAssistantGroup = null;
-          }
-          
           // Add user message
           convertedMessages.push({
             id: msg.id,
@@ -166,22 +137,13 @@ export function AIChatStreaming({
             timestamp: new Date(msg.createdAt)
           });
         } else if (msg.role === 'assistant') {
-          // Start or update assistant group
-          if (!currentAssistantGroup) {
-            currentAssistantGroup = { tools: [] };
-          }
-          
-          // Create assistant message with proper content
-          const assistantContent = msg.content && msg.content.trim() ? 
-            msg.content : 
-            'I\'ve updated your project. Check the preview on the right.';
-          
-          currentAssistantGroup.assistant = {
+          // Add assistant message (may be empty if only tool calls were made)
+          convertedMessages.push({
             id: msg.id,
             role: 'assistant',
-            content: assistantContent,
+            content: msg.content || '',
             timestamp: new Date(msg.createdAt)
-          };
+          });
         } else if (msg.role === 'tool' && msg.toolName) {
           // Create tool indicator for display
           let indicator: StreamingIndicator | null = null;
@@ -210,23 +172,17 @@ export function AIChatStreaming({
             };
           }
           
+          // Add tool message as standalone item
           if (indicator) {
-            if (!currentAssistantGroup) {
-              currentAssistantGroup = { tools: [] };
-            }
-            currentAssistantGroup.tools.push({ message: msg, indicator });
+            convertedMessages.push({
+              id: msg.id,
+              role: 'tool' as any,
+              content: '',
+              timestamp: new Date(msg.createdAt),
+              toolIndicator: indicator,
+              toolName: msg.toolName
+            } as any);
           }
-        }
-      }
-      
-      // Finalize any remaining assistant group
-      if (currentAssistantGroup) {
-        if (currentAssistantGroup.assistant) {
-          // Add tool messages as metadata
-          if (currentAssistantGroup.tools.length > 0) {
-            (currentAssistantGroup.assistant as any).toolMessages = currentAssistantGroup.tools;
-          }
-          convertedMessages.push(currentAssistantGroup.assistant);
         }
       }
       
@@ -273,8 +229,8 @@ export function AIChatStreaming({
         onStreamComplete(files);
       }
       
-      // Refresh messages to get the final state from DB
-      refreshMessages();
+      // Don't refresh messages - they're already in the correct state from streaming
+      // Refreshing causes a flicker as messages are cleared and reloaded
       
       // Clear streaming messages after completion
       setStreamingMessages([]);
@@ -383,7 +339,7 @@ export function AIChatStreaming({
           </div>
         )}
         
-        {hasMore && !messagesLoading && (
+        {hasMore && !messagesLoading && messages.some(m => m.role === 'user' || m.role === 'assistant') && (
           <div className="text-center pb-4">
             <Button
               variant="ghost"
@@ -399,64 +355,83 @@ export function AIChatStreaming({
         <div className="space-y-4">
           {messages.map((message) => (
             <React.Fragment key={message.id}>
-              <div
-                className={cn(
-                  'flex gap-3',
-                  message.role === 'user' && 'flex-row-reverse'
-                )}
-              >
-                <div
-                  className={cn(
-                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-                    message.role === 'user'
-                      ? 'bg-primary text-primary-foreground'
-                      : ''
-                  )}
-                >
-                  {message.role === 'user' ? (
-                    <User className="h-4 w-4" />
-                  ) : (
-                    <Sparkles className="h-4 w-4 text-muted-foreground" />
-                  )}
+              {/* Handle tool messages as standalone items */}
+              {(message as any).role === 'tool' && (message as any).toolIndicator ? (
+                <div className="ml-11 flex items-center gap-1.5 py-0.5">
+                  <span className={cn((message as any).toolIndicator.color, "opacity-60")}>
+                    {(message as any).toolIndicator.icon}
+                  </span>
+                  <p className="text-xs text-muted-foreground">
+                    {(message as any).toolIndicator.message}
+                  </p>
                 </div>
-                <div
-                  className={cn(
-                    'flex-1',
-                    message.role === 'user' && 'rounded-lg px-3 py-2 bg-primary text-primary-foreground'
-                  )}
-                >
-                  <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                  {isClient && (
-                    <p
+              ) : (
+                <>
+                  {/* Only show the message row if there's content or it's a user/system message */}
+                  {(message.content || message.role === 'user' || message.role === 'system') && (
+                    <div
                       className={cn(
-                        'text-xs mt-1',
-                        message.role === 'user'
-                          ? 'text-primary-foreground/70'
-                          : 'text-muted-foreground'
+                        'flex gap-3',
+                        message.role === 'user' && 'flex-row-reverse'
                       )}
                     >
-                      {message.timestamp.toLocaleTimeString()}
-                    </p>
-                  )}
-                </div>
-              </div>
-              
-              {/* Display tool messages inline if they exist (for persisted messages) */}
-              {message.role === 'assistant' && (message as any).toolMessages && (
-                <>
-                  {(message as any).toolMessages.map((tool: any, idx: number) => (
-                    <div
-                      key={`${message.id}-tool-${idx}`}
-                      className="ml-11 flex items-center gap-1.5 py-0.5"
-                    >
-                      <span className={cn(tool.indicator.color, "opacity-60")}>
-                        {tool.indicator.icon}
-                      </span>
-                      <p className="text-xs text-muted-foreground">
-                        {tool.indicator.message}
-                      </p>
+                      <div
+                        className={cn(
+                          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+                          message.role === 'user'
+                            ? 'bg-primary text-primary-foreground'
+                            : ''
+                        )}
+                      >
+                        {message.role === 'user' ? (
+                          <User className="h-4 w-4" />
+                        ) : (
+                          <Sparkles className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div
+                        className={cn(
+                          'flex-1',
+                          message.role === 'user' && 'rounded-lg px-3 py-2 bg-primary text-primary-foreground'
+                        )}
+                      >
+                        {message.content && (
+                          <div className="text-sm [&>*]:mb-2 [&>*:last-child]:mb-0">
+                            <ReactMarkdown
+                              components={{
+                                p: ({children}) => <p className="mb-2 last:mb-0">{children}</p>,
+                                strong: ({children}) => <strong className="font-semibold">{children}</strong>,
+                                em: ({children}) => <em className="italic">{children}</em>,
+                                ul: ({children}) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
+                                ol: ({children}) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
+                                li: ({children}) => (
+                                  <li className="ml-1 [&>p]:inline [&>p]:mb-0">
+                                    {children}
+                                  </li>
+                                ),
+                                code: ({children}) => <code className="px-1 py-0.5 bg-muted rounded text-xs">{children}</code>,
+                                pre: ({children}) => <pre className="p-2 bg-muted rounded overflow-x-auto mb-2">{children}</pre>,
+                              }}
+                            >
+                              {message.content}
+                            </ReactMarkdown>
+                          </div>
+                        )}
+                        {isClient && message.content && (
+                          <p
+                            className={cn(
+                              'text-xs mt-1',
+                              message.role === 'user'
+                                ? 'text-primary-foreground/70'
+                                : 'text-muted-foreground'
+                            )}
+                          >
+                            {message.timestamp.toLocaleTimeString()}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  ))}
+                  )}
                 </>
               )}
             </React.Fragment>
@@ -505,7 +480,7 @@ export function AIChatStreaming({
               );
             }
             
-            // Regular assistant messages
+            // Assistant thinking messages - show with sparkle and message
             return (
               <div
                 key={item.id}
@@ -515,18 +490,11 @@ export function AIChatStreaming({
                   <Sparkles className="h-4 w-4 text-muted-foreground" />
                 </div>
                 <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    {item.indicator && (
-                      <>
-                        <span className={item.indicator.color}>
-                          {item.indicator.icon}
-                        </span>
-                        <p className="text-sm">
-                          {item.indicator.message}
-                        </p>
-                      </>
-                    )}
-                  </div>
+                  {item.indicator && (
+                    <p className="text-sm">
+                      {item.indicator.message}
+                    </p>
+                  )}
                   {isClient && (
                     <p className="text-xs mt-1 text-muted-foreground">
                       {item.timestamp.toLocaleTimeString()}

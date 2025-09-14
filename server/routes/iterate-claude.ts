@@ -54,6 +54,7 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
 
       let conversation: any = null;
       let assistantMessage: any = null;
+      let currentAssistantMessage: any = null;
 
       try {
         let existingFiles = {};
@@ -88,21 +89,25 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
           role: 'user',
           content: body.prompt,
           streamingStatus: 'complete',
-          metadata: { timestamp: new Date().toISOString() }
+          metadata: { timestamp: new Date().toISOString(), sequence: 0 }
         });
 
         // Send user message ID to client
         reply.raw.write(`event: userMessage\ndata: ${JSON.stringify({ messageId: userMessage.id })}\n\n`);
 
-        // Create assistant message with pending status
+        // Create assistant message placeholder with pending status
+        // We'll update this with actual content during streaming
         assistantMessage = await messageService.createMessage({
           conversationId: conversation.id,
           projectId: body.projectId,
           role: 'assistant',
           content: '',
           streamingStatus: 'pending',
-          metadata: { model: 'claude-code' }
+          metadata: { model: 'claude-code', sequence: 1 }
         });
+        
+        // Set currentAssistantMessage to track the active assistant message
+        currentAssistantMessage = assistantMessage;
 
         // Send assistant message ID to client
         reply.raw.write(`event: assistantMessage\ndata: ${JSON.stringify({ messageId: assistantMessage.id })}\n\n`);
@@ -116,12 +121,14 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
         }, 30000);
 
         let finalFiles: Record<string, { content: string; type: string }> | null = null;
-        let assistantContent = '';
+        let currentAssistantContent = '';
         let toolMessages: any[] = [];
+        let allAssistantMessages: any[] = [assistantMessage];
+        let messageSequence = 2; // Start at 2 since user=0, first assistant=1
 
         try {
           // Update assistant message to streaming status
-          await messageService.updateMessage(assistantMessage.id, {
+          await messageService.updateMessage(currentAssistantMessage.id, {
             streamingStatus: 'streaming'
           });
 
@@ -129,13 +136,30 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
           for await (const message of streamGenerator) {
             // Handle different message types for persistence with error recovery
             if (message.type === 'assistant') {
-              // Accumulate assistant content
-              assistantContent += message.data.content || '';
+              // Check if we need to create a new assistant message (after tool calls)
+              if (!currentAssistantMessage) {
+                // Small delay to ensure different timestamps
+                await new Promise(resolve => setTimeout(resolve, 10));
+                
+                currentAssistantMessage = await messageService.createMessage({
+                  conversationId: conversation.id,
+                  projectId: body.projectId,
+                  role: 'assistant',
+                  content: '',
+                  streamingStatus: 'pending',
+                  metadata: { model: 'claude-code', sequence: messageSequence++ }
+                });
+                allAssistantMessages.push(currentAssistantMessage);
+                currentAssistantContent = '';
+              }
               
-              // Update assistant message with accumulated content
+              // Accumulate assistant content for current message
+              currentAssistantContent += message.data.content || '';
+              
+              // Update current assistant message with accumulated content
               try {
-                await messageService.updateMessage(assistantMessage.id, {
-                  content: assistantContent,
+                await messageService.updateMessage(currentAssistantMessage.id, {
+                  content: currentAssistantContent,
                   streamingStatus: 'streaming'
                 });
               } catch (dbError) {
@@ -143,7 +167,26 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
                 // Continue streaming even if DB update fails
               }
             } else if (message.type === 'tool_use') {
-              // Save tool call as a separate message
+              // If we have accumulated assistant content, finalize the current assistant message
+              if (currentAssistantContent) {
+                try {
+                  await messageService.updateMessage(currentAssistantMessage.id, {
+                    content: currentAssistantContent,
+                    streamingStatus: 'complete'
+                  });
+                } catch (dbError) {
+                  console.error('Failed to finalize assistant message:', dbError);
+                }
+                
+                // Reset for potential new assistant message later
+                currentAssistantContent = '';
+                currentAssistantMessage = null; // We'll create a new one when assistant content resumes
+              }
+              
+              // Small delay to ensure different timestamps
+              await new Promise(resolve => setTimeout(resolve, 10));
+              
+              // Save tool call as a separate message with next sequence number
               try {
                 const toolMessage = await messageService.createMessage({
                   conversationId: conversation.id,
@@ -153,7 +196,7 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
                   toolName: message.data.tool,
                   toolCall: message.data.toolInput,
                   streamingStatus: 'complete',
-                  metadata: { toolId: message.data.id }
+                  metadata: { sequence: messageSequence++ }
                 });
                 toolMessages.push(toolMessage);
                 
@@ -164,19 +207,8 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
                 // Continue without message ID
               }
             } else if (message.type === 'tool_result') {
-              // Find corresponding tool message and update with result
-              const toolMsg = toolMessages.find(m => m.metadata?.toolId === message.data.id);
-              if (toolMsg) {
-                try {
-                  await messageService.updateMessage(toolMsg.id, {
-                    toolResult: message.data.toolOutput,
-                    metadata: { ...toolMsg.metadata, hasResult: true }
-                  });
-                } catch (dbError) {
-                  console.error('Failed to update tool result:', dbError);
-                  // Continue streaming
-                }
-              }
+              // Tool results are not persisted separately since we don't have reliable IDs to match them
+              // The tool_use messages contain the important information about what was done
             } else if (message.type === 'complete' && message.data.files) {
               // Store files for later
               finalFiles = message.data.files;
@@ -192,19 +224,18 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
             // Send message to client with message IDs
             const enrichedMessage = {
               ...message,
-              messageId: message.type === 'assistant' ? assistantMessage.id : undefined,
+              messageId: message.type === 'assistant' ? currentAssistantMessage?.id : undefined,
               conversationId: conversation.id
             };
             const sseMessage = `event: message\ndata: ${JSON.stringify(enrichedMessage)}\n\n`;
             reply.raw.write(sseMessage);
           }
 
-          // Mark assistant message as complete with a summary
-          // Use a generic summary since the detailed actions are in tool messages
-          const finalAssistantContent = finalFiles ? 
-            'I\'ve updated your project. Check the preview on the right.' : 
-            (assistantContent || 'I\'ve processed your request.');
-          await messageService.completeStreaming(assistantMessage.id, finalAssistantContent);
+          // Mark current assistant message as complete if it exists
+          // Keep empty assistant messages to maintain consistency with streaming display
+          if (currentAssistantMessage) {
+            await messageService.completeStreaming(currentAssistantMessage.id, currentAssistantContent || '');
+          }
 
           // Update conversation title if this is the first message
           if (!body.conversationId && conversation.id && !conversation.title) {
@@ -285,10 +316,10 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
       } catch (error: any) {
         console.error('Error in Claude stream:', error);
         
-        // Try to mark assistant message as error if it exists
-        if (assistantMessage?.id) {
+        // Try to mark current assistant message as error if it exists
+        if (currentAssistantMessage?.id) {
           try {
-            await messageService.markStreamingError(assistantMessage.id, error.message);
+            await messageService.markStreamingError(currentAssistantMessage.id, error.message);
           } catch (dbError) {
             console.error('Failed to update message error status:', dbError);
           }
@@ -298,7 +329,7 @@ export const iterateClaudeRoutes: FastifyPluginAsync = async (server) => {
         const errorMessage = `event: error\ndata: ${JSON.stringify({ 
           error: error.message || 'Failed to generate with Claude',
           conversationId: conversation?.id,
-          messageId: assistantMessage?.id
+          messageId: currentAssistantMessage?.id
         })}\n\n`;
         reply.raw.write(errorMessage);
         reply.raw.end();

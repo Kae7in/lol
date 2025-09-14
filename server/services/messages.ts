@@ -57,7 +57,10 @@ export class MessageService {
       .select()
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
-      .orderBy(messages.createdAt)
+      .orderBy(
+        sql`COALESCE((${messages.metadata}->>'sequence')::int, EXTRACT(EPOCH FROM ${messages.createdAt})*1000)`,
+        messages.createdAt
+      ) // Order by sequence if available, otherwise by timestamp
       .limit(limit)
       .offset(offset);
     return results;
@@ -135,7 +138,10 @@ export class MessageService {
       })
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
-      .orderBy(messages.createdAt);
+      .orderBy(
+        sql`COALESCE((${messages.metadata}->>'sequence')::int, EXTRACT(EPOCH FROM ${messages.createdAt})*1000)`,
+        messages.createdAt
+      ); // Order by sequence if available
     
     return results;
   }
